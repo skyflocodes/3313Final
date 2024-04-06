@@ -3,6 +3,23 @@ import random
 
 # Initialize Pygame
 pygame.init()
+import socket
+import json
+
+# Networking setup
+server_address = ('localhost', 12345)  # Server IP and port
+client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+try:
+    client_socket.connect(server_address)
+except ConnectionRefusedError:
+    print('Server connection failed.')
+    quit()
+
+def send_player_update(x, visible):
+    """Sends player's current x-coordinate and visibility status to the server."""
+    message = json.dumps({'x': x, 'visible': visible})
+    client_socket.sendall(message.encode('utf-8'))
+
 
 # Set up display dimensions
 WIDTH, HEIGHT = 600, 400
