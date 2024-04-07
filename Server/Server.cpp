@@ -13,21 +13,58 @@
 #include <thread>
 #include <random>
 
-// Forward declaration for ByteArray class
-class ByteArray;
-
 using namespace Sync;
+
+class Asteroid {
+public:
+    int positionX;
+    int speed;
+
+    Asteroid(int posX, int spd) : positionX(posX), speed(spd) {}
+
+    void Move() { positionX += speed; }
+};
+
+std::vector<Asteroid> asteroids;
+std::mutex asteroidMutex;
 
 class Player {
 public:
     int id;
     int positionX = 0;
-
+    Socket& connection;
+    Player(Socket& conn) : connection(conn) {}
     int GetPositionX() const { return positionX; }
 };
 
 std::vector<Player*> players;
 std::mutex playersMutex;
+
+void BroadcastAsteroidPositions() {
+    std::lock_guard<std::mutex> lock(asteroidMutex);
+    for (const auto& asteroid : asteroids) {
+        std::string asteroidMessage = "Asteroid position: " + std::to_string(asteroid.positionX) + ", Speed: " + std::to_string(asteroid.speed);
+        for (const auto& player : players) {
+            player->connection.Write(ByteArray(asteroidMessage)); // Assuming ByteArray can be constructed with std::string
+        }
+    }
+}
+
+void UpdateAsteroids() {
+    std::lock_guard<std::mutex> lock(asteroidMutex);
+    for (auto& asteroid : asteroids) {
+        asteroid.Move();
+    }
+}
+
+void GenerateAsteroid() {
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<> dis(1, 100); // Random position
+    std::uniform_int_distribution<> speedDis(1, 5); // Random speed
+
+    asteroids.push_back(Asteroid(dis(gen), speedDis(gen)));
+}
 
 class ClientHandler : public Thread {
 private:
@@ -109,6 +146,16 @@ int main() {
     SocketServer server(3007);
     ConnectionManager serverManager(server);
 
+    // Background thread for generating asteroids and broadcasting their positions
+    std::thread asteroidThread([] {
+        while (true) {
+            GenerateAsteroid();
+            UpdateAsteroids();
+            BroadcastAsteroidPositions();
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
+    });
+
     std::cin.get();
 
     std::cout << "Shutting down the server." << std::endl;
@@ -119,6 +166,8 @@ int main() {
         delete player;
     }
     players.clear();
+
+    asteroidThread.join();
 
     return 0;
 }
