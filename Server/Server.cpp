@@ -1,86 +1,66 @@
+#include <iostream>
 #include <vector>
-#include <algorithm>
-#include "thread.h"
-#include <stdlib.h>
-#include <time.h>
-#include <list>
 #include <mutex>
-#include "socketserver.h"
+#include "thread.h" // Assuming Thread class is defined here
+#include "socketserver.h" // Assuming SocketServer class is defined here
+
+// Forward declaration for ByteArray class
+class ByteArray;
 
 using namespace Sync;
 
-// Forward declaration for Player class
 class Player {
 public:
-    int positionX = 0; // Example player position property
+    int id;
+    int positionX = 0;
 
-    void MoveLeft() { positionX -= 1; } // Move the player left
-    void MoveRight() { positionX += 1; } // Move the player right
-    int GetPositionX() const { return positionX; } // Get player's X position
+    void MoveLeft() { positionX -= 1; }
+    void MoveRight() { positionX += 1; }
+    int GetPositionX() const { return positionX; }
 };
 
+std::vector<Player*> players;
+std::mutex playersMutex;
 
-
-std::vector<Player*> players; // Global player list
-std::mutex playersMutex; // Global mutex for synchronizing access to players
-class Asteroid {
-public:
-    int positionX;
-    int positionY;
-    static const int speedY = 2; // Speed at which the asteroid moves down
-
-    Asteroid(int posX, int posY) : positionX(posX), positionY(posY) {}
-
-    void UpdatePosition() {
-        positionY += speedY;
-    }
-
-};
-// Assume we have a global list of asteroids
-std::vector<Asteroid*> asteroids;
-std::mutex asteroidsMutex;
-
-// Handles communication with clients, processing their messages.
 class ClientHandler : public Thread {
-
-    
 private:
     bool& shouldTerminate;
     Socket& connectionSocket;
-    ByteArray receivedData;
-    Player* player; // The Player object associated with this handler
+    std::thread handlerThread;
 
 public:
-    ClientHandler(Socket& clientSocket, bool& terminateSignal, Player* playerObject)
-        : connectionSocket(clientSocket), shouldTerminate(terminateSignal), player(playerObject) {}
-    
-    ~ClientHandler() {}
+    ClientHandler(Socket& clientSocket, bool& terminateSignal)
+        : connectionSocket(clientSocket), shouldTerminate(terminateSignal) {}
 
+    void Start() {
+        handlerThread = std::thread([this] { this->ThreadMain(); });
+    }
 
-
-
-    Socket& GetConnectionSocket() { return connectionSocket; }
+    void SendPlayerPositions() {
+        std::lock_guard<std::mutex> lock(playersMutex);
+        for (const auto& player : players) {
+            std::string positionMessage = "Player " + std::to_string(player->id) + " position: " + std::to_string(player->GetPositionX());
+            connectionSocket.Write(ByteArray(positionMessage)); // Assuming ByteArray can be constructed with std::string
+        }
+    }
 
     virtual long ThreadMain() {
-        while(!shouldTerminate) {
+        while (!shouldTerminate) {
             try {
+                SendPlayerPositions();
+
+                ByteArray receivedData;
                 connectionSocket.Read(receivedData);
-                std::string originalMessage = receivedData.ToString();
+                std::string move = receivedData.ToString(); // Assuming ToString method exists to convert ByteArray to std::string
 
-                // Lock the mutex while updating the game state
+                // Log received data to the console
+                std::cout << "Received data: " << move << std::endl;
+
                 std::lock_guard<std::mutex> lock(playersMutex);
-
-                if (originalMessage == "left") {
-                    player->MoveLeft();
-                }
-                else if (originalMessage == "right") {
-                    player->MoveRight();
-                }
-
-                std::string newPosition = "New Position: " + std::to_string(player->GetPositionX());
-                receivedData = ByteArray(newPosition);
-                connectionSocket.Write(receivedData);
-                
+                if (move == "left" && !players.empty())
+                    players[0]->MoveLeft();
+                else if (move == "right" && !players.empty())
+                    players[0]->MoveRight();
             }
             catch (...) {
                 shouldTerminate = true;
@@ -90,40 +70,26 @@ public:
     }
 };
 
-// Manages server lifecycle and client connections.
 class ConnectionManager : public Thread {
 private:
     bool terminateFlag = false;
     SocketServer& serverInstance;
-    std::vector<ClientHandler*> clientHandlers;
 
 public:
     ConnectionManager(SocketServer& server) : serverInstance(server) {}
-
-    ~ConnectionManager() {
-        terminateFlag = true;
-        for (auto& handler : clientHandlers) {
-            if (handler) {
-                handler->GetConnectionSocket().Close();
-                delete handler;
-                handler = nullptr;
-            }
-        }
-        clientHandlers.clear();
-    }
 
     virtual long ThreadMain() {
         while (!terminateFlag) {
             try {
                 Socket* clientSocket = new Socket(serverInstance.Accept());
 
-                // Create a new Player for each client
                 std::lock_guard<std::mutex> lock(playersMutex);
                 Player* newPlayer = new Player();
+                newPlayer->id = players.size() + 1;
                 players.push_back(newPlayer);
 
-                ClientHandler* newHandler = new ClientHandler(*clientSocket, terminateFlag, newPlayer);
-                clientHandlers.push_back(newHandler);
+                ClientHandler* newHandler = new ClientHandler(*clientSocket, terminateFlag);
+                newHandler->Start();
             }
             catch (...) {
                 terminateFlag = true;
@@ -145,7 +111,7 @@ int main() {
     std::cout << "Shutting down the server." << std::endl;
     server.Shutdown();
 
-    // Cleanup global players list
+    std::lock_guard<std::mutex> lock(playersMutex);
     for (auto* player : players) {
         delete player;
     }

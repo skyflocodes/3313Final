@@ -1,7 +1,7 @@
 import pygame
 import sys
 from socket import socket, AF_INET, SOCK_STREAM
-import random  # Moved import to the top for better style
+import random
 
 # Initialize Pygame and the clock
 pygame.init()
@@ -13,21 +13,26 @@ screen = pygame.display.set_mode(size)
 pygame.display.set_caption("Client View")
 
 # Asteroid setup
-asteroid = pygame.Rect(random.randint(0, 750), 0, 50, 50)  # Random initial position at the top
-asteroid_speed = 2  # Pixels the asteroid moves per frame
+asteroid = pygame.Rect(random.randint(0, 750), 0, 50, 50)
+asteroid_speed = 2
+
+# Character setup
+character = pygame.Rect(400, 300, 50, 50)
+character_speed = 5
+
+# Player alive flag
+isAlive = True
 
 # Function to reset the game
 def reset_game():
-    global character, asteroid
-    character.x = 400  # Reset player to the middle
-    asteroid.y = 0  # Reset asteroid to the top
-    asteroid.x = random.randint(0, 750)  # New random x position for the asteroid
-
-# Character setup
-character = pygame.Rect(400, 300, 50, 50)  # Initial position of the character
-character_speed = 5  # Pixels the character moves per frame
+    global character, asteroid, isAlive
+    character.x = 400
+    asteroid.y = 0
+    asteroid.x = random.randint(0, 750)
+    isAlive = True  # Confirm isAlive as global and reset it
 
 def main():
+    global isAlive  # Ensure isAlive is accessible globally
     server_address = ('localhost', 3007)
     with socket(AF_INET, SOCK_STREAM) as sock:
         try:
@@ -38,35 +43,36 @@ def main():
                     if event.type == pygame.QUIT:
                         done = True
 
-                # Movement and message sending
                 keys = pygame.key.get_pressed()
-                if keys[pygame.K_LEFT]:
-                    character.x -= character_speed
-                    sock.sendall("move left".encode('utf-8'))
-                if keys[pygame.K_RIGHT]:
-                    character.x += character_speed
-                    sock.sendall("move right".encode('utf-8'))
+                if isAlive:
+                    if keys[pygame.K_LEFT]:
+                        character.x -= character_speed
+                    if keys[pygame.K_RIGHT]:
+                        character.x += character_speed
 
-                # Keep the character on screen
+                # Determine what to send based on isAlive status
+                message = str(character.x) if isAlive else "-999"
+                sock.sendall(message.encode('utf-8'))
+
                 character.left = max(character.left, 0)
                 character.right = min(character.right, size[0])
 
-                # Move asteroid and check for collision within the loop
                 asteroid.y += asteroid_speed
-                if asteroid.y > 600:  # If asteroid moves off screen, reset its position
+                if asteroid.y > 600:
                     asteroid.y = 0
                     asteroid.x = random.randint(0, 750)
 
-                # Check for collision
-                if character.colliderect(asteroid):
-                    reset_game()  # Reset the game on collision
+                if isAlive and character.colliderect(asteroid):
+                    isAlive = False  # No longer alive, next send will be -999
 
-                # Drawing
-                screen.fill((0, 0, 128))  # Blue background
-                pygame.draw.rect(screen, (255, 0, 0), asteroid)  # Draw the asteroid
-                pygame.draw.rect(screen, (255, 255, 255), character)  # Draw the character
+                screen.fill((0, 0, 128))  # Always update the game scene
+                pygame.draw.rect(screen, (255, 0, 0), asteroid)  # Draw asteroids
+
+                if isAlive:  # Draw the character only if alive
+                    pygame.draw.rect(screen, (255, 255, 255), character)
+
                 pygame.display.flip()
-                clock.tick(30)  # FPS limit
+                clock.tick(30)
         except ConnectionResetError:
             print("Connection was reset by the server.")
         except Exception as e:
