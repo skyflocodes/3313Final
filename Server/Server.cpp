@@ -3,6 +3,15 @@
 #include <mutex>
 #include "thread.h" // Assuming Thread class is defined here
 #include "socketserver.h" // Assuming SocketServer class is defined here
+#include "SharedObject.h"
+#include "Semaphore.h"
+#include <stdlib.h>
+#include <time.h>
+#include <list>
+#include <pthread.h>
+#include <chrono>
+#include <thread>
+#include <random>
 
 // Forward declaration for ByteArray class
 class ByteArray;
@@ -14,8 +23,6 @@ public:
     int id;
     int positionX = 0;
 
-    void MoveLeft() { positionX -= 1; }
-    void MoveRight() { positionX += 1; }
     int GetPositionX() const { return positionX; }
 };
 
@@ -57,10 +64,6 @@ public:
                 std::cout << "Received data: " << move << std::endl;
 
                 std::lock_guard<std::mutex> lock(playersMutex);
-                if (move == "left" && !players.empty())
-                    players[0]->MoveLeft();
-                else if (move == "right" && !players.empty())
-                    players[0]->MoveRight();
             }
             catch (...) {
                 shouldTerminate = true;
