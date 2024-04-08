@@ -1,96 +1,127 @@
 #include <iostream>
 #include <vector>
 #include <mutex>
-#include "thread.h" // Assuming Thread class is defined here
-#include "socketserver.h" // Assuming SocketServer class is defined here
-#include "SharedObject.h"
-#include "Semaphore.h"
+#include "thread.h"
+#include "socketserver.h"
 #include <stdlib.h>
 #include <time.h>
 #include <list>
-#include <pthread.h>
 #include <chrono>
 #include <thread>
 #include <random>
+#include "nlohmann/json.hpp"
+//you will need to install json
 
-using namespace Sync;
+using json = nlohmann::json;
+using namespace Sync; // Assuming Sync namespace is defined in one of the included headers
+
+// Forward declaration of Socket to be used in Player and ClientHandler
+class Socket;
 
 class Asteroid {
 public:
     int positionX;
+    int positionY;
     int speed;
 
-    Asteroid(int posX, int spd) : positionX(posX), speed(spd) {}
+    Asteroid(int posX, int posY, int spd) : positionX(posX), positionY(posY), speed(spd) {}
 
-    void Move() { positionX += speed; }
+    json toJson() const {
+        json asteroidJson;
+        asteroidJson["positionX"] = positionX;
+        asteroidJson["positionY"] = positionY;
+        return asteroidJson;
+    }
 };
 
-std::vector<Asteroid> asteroids;
 std::mutex asteroidMutex;
+Asteroid asteroid(0, 0, 5); // Initialize with some default values
 
-class Player {
+void InitializeAsteroid() {
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<> disX(0, 750); // Random position for X
+
+    std::lock_guard<std::mutex> lock(asteroidMutex);
+    asteroid.positionX = disX(gen);
+    asteroid.positionY = 550; // Start from the top of the screen
+}
+
+class Player
+{
 public:
     int id;
     int positionX = 0;
-    Socket& connection;
-    Player(Socket& conn) : connection(conn) {}
+    Socket &connection;
+    Player(Socket &conn) : connection(conn) {}
     int GetPositionX() const { return positionX; }
 };
 
-std::vector<Player*> players;
+std::vector<Player *> players;
 std::mutex playersMutex;
 
+void UpdateAsteroidPosition() {
+    std::lock_guard<std::mutex> lock(asteroidMutex);
+    asteroid.positionY -= asteroid.speed; // Move down by its speed
+
+    if (asteroid.positionY < 0) { // If it reaches or passes the bottom
+        InitializeAsteroid(); // Reset position and pick a new X
+    }
+}
+
 void BroadcastAsteroidPositions() {
-    std::lock_guard<std::mutex> lock(asteroidMutex);
-    for (const auto& asteroid : asteroids) {
-        std::string asteroidMessage = "Asteroid position: " + std::to_string(asteroid.positionX) + ", Speed: " + std::to_string(asteroid.speed);
-        for (const auto& player : players) {
-            player->connection.Write(ByteArray(asteroidMessage)); // Assuming ByteArray can be constructed with std::string
-        }
+    UpdateAsteroidPosition(); // Update position before broadcasting
+
+    json asteroidJson = asteroid.toJson();
+    std::string asteroidMessage = asteroidJson.dump();
+    std::cout << "Broadcasting " << asteroidMessage << std::endl;
+
+    for (const auto& player : players) {
+        player->connection.Write(ByteArray(asteroidMessage));
     }
 }
 
-void UpdateAsteroids() {
-    std::lock_guard<std::mutex> lock(asteroidMutex);
-    for (auto& asteroid : asteroids) {
-        asteroid.Move();
-    }
-}
-
-void GenerateAsteroid() {
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_int_distribution<> dis(1, 100); // Random position
-    std::uniform_int_distribution<> speedDis(1, 5); // Random speed
-
-    asteroids.push_back(Asteroid(dis(gen), speedDis(gen)));
-}
-
-class ClientHandler : public Thread {
+class ClientHandler : public Thread
+{
 private:
-    bool& shouldTerminate;
-    Socket& connectionSocket;
+    bool &shouldTerminate;
+    Socket &connectionSocket;
     std::thread handlerThread;
 
 public:
-    ClientHandler(Socket& clientSocket, bool& terminateSignal)
+    ClientHandler(Socket &clientSocket, bool &terminateSignal)
         : connectionSocket(clientSocket), shouldTerminate(terminateSignal) {}
 
-    void Start() {
-        handlerThread = std::thread([this] { this->ThreadMain(); });
+    void Start()
+    {
+        handlerThread = std::thread([this]
+                                    { this->ThreadMain(); });
     }
 
-    void SendPlayerPositions() {
+    void SendPlayerPositions()
+    {
         std::lock_guard<std::mutex> lock(playersMutex);
-        for (const auto& player : players) {
-            std::string positionMessage = "Player " + std::to_string(player->id) + " position: " + std::to_string(player->GetPositionX());
-            connectionSocket.Write(ByteArray(positionMessage)); // Assuming ByteArray can be constructed with std::string
+
+        json playerPositions;
+
+        for (const auto &player : players)
+        {
+            playerPositions[std::to_string(player->id)]["positionX"] = player->positionX;
+
+            // std::string positionMessage = "\nPlayer " + std::to_string(player->id) + " position: " + std::to_string(player->GetPositionX());
+            // connectionSocket.Write(ByteArray(positionMessage)); // Assuming ByteArray can be constructed with std::string
         }
+
+        std::string positionMessage = playerPositions.dump();
+        connectionSocket.Write(ByteArray(positionMessage));
     }
 
-    virtual long ThreadMain() {
-        while (!shouldTerminate) {
-            try {
+    virtual long ThreadMain()
+    {
+        while (!shouldTerminate)
+        {
+            try
+            {
                 SendPlayerPositions();
 
                 ByteArray receivedData;
@@ -102,7 +133,8 @@ public:
 
                 std::lock_guard<std::mutex> lock(playersMutex);
             }
-            catch (...) {
+            catch (...)
+            {
                 shouldTerminate = true;
             }
         }
@@ -110,28 +142,54 @@ public:
     }
 };
 
-class ConnectionManager : public Thread {
+class ConnectionManager : public Thread
+{
 private:
     bool terminateFlag = false;
-    SocketServer& serverInstance;
+    SocketServer &serverInstance;
 
 public:
-    ConnectionManager(SocketServer& server) : serverInstance(server) {}
+    ConnectionManager(SocketServer &server) : serverInstance(server) {}
 
-    virtual long ThreadMain() {
-        while (!terminateFlag) {
-            try {
-                Socket* clientSocket = new Socket(serverInstance.Accept());
+    virtual long ThreadMain()
+    {
+        ByteArray bytes;
+        while (!terminateFlag)
+        {
+            try
+            {
+                Socket *clientSocket = new Socket(serverInstance.Accept());
 
-                std::lock_guard<std::mutex> lock(playersMutex);
-                Player* newPlayer = new Player();
-                newPlayer->id = players.size() + 1;
-                players.push_back(newPlayer);
+                int r = clientSocket->Read(bytes);
+                if (r == -1)
+                {
+                    std::cout << "Error in socket detected" << std::endl;
+                    // no change
+                }
+                else if (r == 0)
+                {
+                    std::cout << "Socket closed at remote end" << std::endl;
+                    break;
+                }
+                else
+                {
+                    std::string theString = bytes.ToString();
 
-                ClientHandler* newHandler = new ClientHandler(*clientSocket, terminateFlag);
-                newHandler->Start();
+                    if (theString == "monkey_eating_lettuce")
+                    {
+                        std::lock_guard<std::mutex> lock(playersMutex);
+                        Player *newPlayer = new Player(*clientSocket); // Corrected to pass the Socket reference
+
+                        newPlayer->id = players.size() + 1;
+                        players.push_back(newPlayer);
+
+                        ClientHandler *newHandler = new ClientHandler(*clientSocket, terminateFlag);
+                        newHandler->Start();
+                    }
+                }
             }
-            catch (...) {
+            catch (...)
+            {
                 terminateFlag = true;
             }
         }
@@ -139,20 +197,19 @@ public:
     }
 };
 
-int main() {
-    std::cout << "Server is active. Listening on port 3007." << std::endl;
+int main()
+{
+    std::cout << "Server is active. Listening on port pyt." << std::endl;
     std::cout << "Press Enter to shut down the server..." << std::endl;
 
-    SocketServer server(3007);
+    SocketServer server(2005);
     ConnectionManager serverManager(server);
 
     // Background thread for generating asteroids and broadcasting their positions
     std::thread asteroidThread([] {
         while (true) {
-            GenerateAsteroid();
-            UpdateAsteroids();
             BroadcastAsteroidPositions();
-            std::this_thread::sleep_for(std::chrono::seconds(1));
+            std::this_thread::sleep_for(std::chrono::milliseconds(100)); // Control the update rate
         }
     });
 
@@ -162,7 +219,8 @@ int main() {
     server.Shutdown();
 
     std::lock_guard<std::mutex> lock(playersMutex);
-    for (auto* player : players) {
+    for (auto *player : players)
+    {
         delete player;
     }
     players.clear();
