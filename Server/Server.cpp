@@ -8,44 +8,30 @@
 #include <list>
 #include <chrono>
 #include <thread>
+#include <atomic>
+#include <nlohmann/json.hpp>
+#include <fcntl.h>  // For fcntl
+#include <unistd.h> // For read, write
+#include <errno.h>  // For errno
+
 #include <random>
-#include "nlohmann/json.hpp"
-//you will need to install json
+// you will need to install json
 
 using json = nlohmann::json;
 using namespace Sync; // Assuming Sync namespace is defined in one of the included headers
 
-// Forward declaration of Socket to be used in Player and ClientHandler
+std::atomic<bool> running(true);
+
+// Forward declaration of Socket to be used in Player
 class Socket;
 
-class Asteroid {
-public:
-    int positionX;
-    int positionY;
-    int speed;
-
-    Asteroid(int posX, int posY, int spd) : positionX(posX), positionY(posY), speed(spd) {}
-
-    json toJson() const {
-        json asteroidJson;
-        asteroidJson["positionX"] = positionX;
-        asteroidJson["positionY"] = positionY;
-        return asteroidJson;
-    }
+struct PlayerData
+{
+    int id;
+    float posX;
 };
-
-std::mutex asteroidMutex;
-Asteroid asteroid(0, 0, 5); // Initialize with some default values
-
-void InitializeAsteroid() {
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_int_distribution<> disX(0, 750); // Random position for X
-
-    std::lock_guard<std::mutex> lock(asteroidMutex);
-    asteroid.positionX = disX(gen);
-    asteroid.positionY = 550; // Start from the top of the screen
-}
+std::unordered_map<int, PlayerData> playerData;
+std::mutex playersMutex;
 
 class Player
 {
@@ -58,28 +44,6 @@ public:
 };
 
 std::vector<Player *> players;
-std::mutex playersMutex;
-
-void UpdateAsteroidPosition() {
-    std::lock_guard<std::mutex> lock(asteroidMutex);
-    asteroid.positionY -= asteroid.speed; // Move down by its speed
-
-    if (asteroid.positionY < 0) { // If it reaches or passes the bottom
-        InitializeAsteroid(); // Reset position and pick a new X
-    }
-}
-
-void BroadcastAsteroidPositions() {
-    UpdateAsteroidPosition(); // Update position before broadcasting
-
-    json asteroidJson = asteroid.toJson();
-    std::string asteroidMessage = asteroidJson.dump();
-    std::cout << "Broadcasting " << asteroidMessage << std::endl;
-
-    for (const auto& player : players) {
-        player->connection.Write(ByteArray(asteroidMessage));
-    }
-}
 
 class ClientHandler : public Thread
 {
@@ -98,47 +62,71 @@ public:
                                     { this->ThreadMain(); });
     }
 
-    void SendPlayerPositions()
-    {
-        std::lock_guard<std::mutex> lock(playersMutex);
-
-        json playerPositions;
-
-        for (const auto &player : players)
-        {
-            playerPositions[std::to_string(player->id)]["positionX"] = player->positionX;
-
-            // std::string positionMessage = "\nPlayer " + std::to_string(player->id) + " position: " + std::to_string(player->GetPositionX());
-            // connectionSocket.Write(ByteArray(positionMessage)); // Assuming ByteArray can be constructed with std::string
-        }
-
-        std::string positionMessage = playerPositions.dump();
-        connectionSocket.Write(ByteArray(positionMessage));
-    }
-
     virtual long ThreadMain()
     {
+        std::string buffer; // Buffer to accumulate received data
         while (!shouldTerminate)
         {
             try
             {
-                SendPlayerPositions();
-
                 ByteArray receivedData;
-                connectionSocket.Read(receivedData);
-                std::string move = receivedData.ToString(); // Assuming ToString method exists to convert ByteArray to std::string
+                // Read operation...
+                if (connectionSocket.Read(receivedData) > 0)
+                {
+                    buffer += receivedData.ToString(); // Append to buffer
 
-                // Log received data to the console
-                std::cout << "Received data: " << move << std::endl;
+                    size_t pos;
+                    // Process all complete JSON messages in the buffer
+                    while ((pos = buffer.find("\n")) != std::string::npos)
+                    {
+                        std::string message = buffer.substr(0, pos);
+                        buffer.erase(0, pos + 1); // Remove processed message from buffer
 
-                std::lock_guard<std::mutex> lock(playersMutex);
+                        try
+                        {
+                            json jsonData = json::parse(message); // Parse the JSON data
+                            std::cout << "Received data: " << jsonData.dump() << std::endl;
+                            // Process jsonData...
+                        }
+                        catch (json::parse_error &e)
+                        {
+                            std::cerr << "JSON parse error: " << e.what() << std::endl;
+                            // Handle parse error (e.g., log it and continue)
+                        }
+                    }
+
+                    // Optionally, send updated positions to all clients here or elsewhere
+                }
+            }
+            catch (const std::exception &e)
+            {
+                std::cerr << "Exception in client handler thread: " << e.what() << std::endl;
+                shouldTerminate = true;
             }
             catch (...)
             {
+                std::cerr << "Unknown exception in client handler thread." << std::endl;
                 shouldTerminate = true;
             }
         }
         return 0;
+    }
+
+    void SendPlayerPositions()
+    {
+        std::lock_guard<std::mutex> lock(playersMutex);
+
+        json playerPositions = json::array();
+        for (const auto &player : players)
+        {
+            json playerInfo;
+            playerInfo["id"] = player->id;
+            playerInfo["positionX"] = player->positionX;
+            playerPositions.push_back(playerInfo);
+        }
+
+        std::string positionMessage = playerPositions.dump() + "\n"; // Append newline character
+        connectionSocket.Write(ByteArray(positionMessage));
     }
 };
 
@@ -164,7 +152,6 @@ public:
                 if (r == -1)
                 {
                     std::cout << "Error in socket detected" << std::endl;
-                    // no change
                 }
                 else if (r == 0)
                 {
@@ -184,6 +171,7 @@ public:
                         players.push_back(newPlayer);
 
                         ClientHandler *newHandler = new ClientHandler(*clientSocket, terminateFlag);
+                        std::cout << "New Client connected. Client thread starts..." << std::endl;
                         newHandler->Start();
                     }
                 }
@@ -199,33 +187,17 @@ public:
 
 int main()
 {
-    std::cout << "Server is active. Listening on port pyt." << std::endl;
-    std::cout << "Press Enter to shut down the server..." << std::endl;
+    std::cout << "Server is active. Listening on port 2005." << std::endl;
 
     SocketServer server(2005);
     ConnectionManager serverManager(server);
 
-    // Background thread for generating asteroids and broadcasting their positions
-    std::thread asteroidThread([] {
-        while (true) {
-            BroadcastAsteroidPositions();
-            std::this_thread::sleep_for(std::chrono::milliseconds(100)); // Control the update rate
-        }
-    });
-
-    std::cin.get();
+    std::cin.get(); // Wait for user input to terminate the server.
 
     std::cout << "Shutting down the server." << std::endl;
     server.Shutdown();
 
-    std::lock_guard<std::mutex> lock(playersMutex);
-    for (auto *player : players)
-    {
-        delete player;
-    }
-    players.clear();
-
-    asteroidThread.join();
+    running = false; // Set running to false to stop any running threads.
 
     return 0;
 }

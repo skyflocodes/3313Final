@@ -1,228 +1,126 @@
-import pygame
-import sys
-from socket import socket, AF_INET, SOCK_STREAM
-import random
-import json
+# Import necessary libraries
+import pygame  # For game development (graphics, events, etc.)
+import sys  # System-specific parameters and functions (not used in this code)
+from socket import socket, AF_INET, SOCK_STREAM  # For networking (socket programming)
+import json  # For encoding and decoding JSON strings
 
 # Initialize Pygame and the clock
 pygame.init()
 clock = pygame.time.Clock()
 
-# Screen setup
-size = (800, 600)
-screen = pygame.display.set_mode(size)
-pygame.display.set_caption("Client View")
+# Initialize other global variables
+size = (800, 600)  # Window size
+screen = pygame.display.set_mode(size)  # Create a window of the specified size
+character = pygame.Rect(400, 300, 50, 50)  # Rectangle for the character
+asteroid = pygame.Rect(0, 0, 50, 50)  # Rectangle for the asteroid, will be updated by the server
+isAlive = True  # Flag to keep track of the player's life status
+character_speed = 20  # Character movement speed
 
-### Asteroid setup
-##asteroid = pygame.Rect(random.randint(0, 750), 0, 50, 50)
-##asteroid_speed = 100
+other_players = {}
 
-# Character setup
-character = pygame.Rect(400, 300, 50, 50)
-character_speed = 100
+# Connection secret
+secret = "monkey_eating_lettuce"  # Secret string for connection (authentication purpose)
 
-# Player alive flag
-isAlive = True
+# Function to reset the game
+def reset_game():
+    global character, asteroid, isAlive
+    character.x = 400  # Reset character's X position
+    asteroid.y = 0  # Reset asteroid's Y position to the top
+    asteroid.x = 0  # 0 is asteroid's X position
+    isAlive = True  # Set the player's status to alive
 
-#Connection secret
-secret = "monkey_eating_lettuce"
+def update_other_players(data):
+    global other_players
+    other_players = data.get("players", {})
 
-# Before the game loop starts
-last_frame_time = pygame.time.get_ticks()
+def draw_other_players():
+    for player_id, player_info in other_players.items():
+        player_pos = pygame.Rect(player_info["positionX"], 300, 50, 50)  # Adjust Y position as needed
+        pygame.draw.rect(screen, (0, 255, 0), player_pos)  # Draw other players in green
 
+
+def send_player_location(sock, character):
+    player_location = {"positionX": character.x, "positionY": character.y}
+    message = json.dumps(player_location)
+    sock.sendall(message.encode('utf-8'))
 
 def main():
-    global isAlive, asteroid_speed,last_frame_time # Ensure isAlive is accessible globally
-    server_address = ('localhost', 2005)
-
-    # Initialize and connect the socket
-    sock = socket(AF_INET, SOCK_STREAM)
+    global isAlive
+    buffer = ''
+    server_address = ('localhost', 2005)  # Server address and port
+    sock = socket(AF_INET, SOCK_STREAM)  # Create a TCP socket
     try:
-        sock.connect(server_address)
+        sock.connect(server_address)  # Connect to the server
         sock.setblocking(0)  # Set the socket to non-blocking mode
+        sock.sendall(secret.encode('utf-8'))  # Send the secret for authentication
 
-        #send secret to server to have it recognize client as legitimate
-        sock.sendall(secret.encode('utf-8'))
-        
-        # Initially placing the asteroid off-screen or at a default position
-        asteroid = pygame.Rect(-100, -100, 50, 50)  # Starting off-screen
-        
         done = False
-        while not done:
-            
-            current_frame_time = pygame.time.get_ticks()
-            delta_time = (current_frame_time - last_frame_time) / 1000.0
-            last_frame_time = current_frame_time
-            
-            for event in pygame.event.get():
+        while not done:  # Game loop
+            for event in pygame.event.get():  # Event handling
                 if event.type == pygame.QUIT:
-                    done = True
+                    done = True  # Exit the game loop if window is closed
 
-            keys = pygame.key.get_pressed()
-            if isAlive:
-                if keys[pygame.K_LEFT] and character.x>=0:
+            current_frame_time = pygame.time.get_ticks()  # Current time (unused)
+            delta_time = clock.tick(30) / 1000.0  # Time passed since last frame (to ensure consistent movement speed)
+
+            keys = pygame.key.get_pressed()  # Get state of all keyboard keys
+            if isAlive:  # Only allow movement if the player is alive
+                # Move character left or right based on key presses
+                if keys[pygame.K_LEFT]:
+                    print(f"Before moving left: {character.x}")
+                    print("Moving left")
                     character.x -= character_speed * delta_time
-                if keys[pygame.K_RIGHT] and character.x<=(size[0]-50):
+                    print(f"After moving left: {character.x}")
+                if keys[pygame.K_RIGHT]:
+                    print("Moving right")
                     character.x += character_speed * delta_time
+                    
 
-
-
-            # Send character's position to the server
-            # Only send character's position to the server if isAlive is True
-            if isAlive:
-                message = str(character.x)
-                print(message)
+                message = json.dumps({"positionX": character.x})
                 sock.sendall(message.encode('utf-8'))
 
-
             # Attempt to receive and parse messages from the server
-        try:
-            message = sock.recv(1024).decode('utf-8')
-            data = json.loads(message)
-            if "positionX" in data and "positionY" in data:
-                asteroid.x = data["positionX"]
-                asteroid.y = data["positionY"]
-                # Print the received asteroid position data
-                print("Received asteroid position: X = ", asteroid.x, ", Y = ", asteroid.y)
-            # Handle other data types as needed
-        except BlockingIOError:
-            pass  # No data received
-        except Exception as e:
-            print(f"An error occurred while receiving data: {e}")
+            try:
+                # Receive data and append to buffer
+                data = sock.recv(4096).decode('utf-8')  # Adjust buffer size as needed
+                buffer += data
+                print("Buffer before processing:", buffer)  # Debug print
+                
+                # Process each message in buffer
+                while '\n' in buffer:
+                    message, buffer = buffer.split('\n', 1)
+                    data = json.loads(message)
+                    print("Processed message:", data)  # Print processed data for logging
 
-            # # Update asteroid position based on its speed
-            # asteroid.y += asteroid_speed * delta_time  # Move asteroid based on speed and delta time
-            # if asteroid.y > 600:
-            #     # Optionally reset asteroid's position to top if needed
-            #     asteroid.y = 0
+                    # Check for player positions in the data and update accordingly
+                    if "players" in data:
+                        update_other_players(data["players"])
 
+            except BlockingIOError:
+                pass  # No data received, continue
+            
             # Check for collision between character and asteroid
             if isAlive and character.colliderect(asteroid):
-                isAlive = False  # Character is no longer alive
+                isAlive = False  # Set isAlive to False on collision
 
-            # Drawing and refreshing the screen
-            screen.fill((0, 0, 128))
-            pygame.draw.rect(screen, (255, 0, 0), asteroid)
+            # Drawing
+            screen.fill((0, 0, 128))  # Fill screen with dark blue
+            draw_other_players()  # Draw other players
+            
+            pygame.draw.rect(screen, (255, 0, 0), asteroid)  # Draw the asteroid (red)
             if isAlive:
-                pygame.draw.rect(screen, (255, 255, 255), character)
-            pygame.display.flip()
-            clock.tick(30)
+                pygame.draw.rect(screen, (255, 255, 255), character)  # Draw the character (white) if alive
+                send_player_location(sock, character)
+            pygame.display.flip()  # Update the full display Surface to the screen
+            
     except ConnectionResetError:
         print("Connection was reset by the server.")
     except Exception as e:
         print(f"An error occurred: {e}")
+        print(sock.recv(4096).decode('utf-8'))
     finally:
-        sock.close()
+        sock.close()  # Ensure the socket is closed on exit
+        pygame.quit()  # Quit Pygame
 
 if __name__ == "__main__":
     main()
-    pygame.quit()
-
-
-class Asteroid(pygame.sprite.Sprite):
-
-    def __init__(self):
-        pygame.sprite.Sprite.__init__(self)
-        self.rect = pygame.Rect(0, 600, 50, 50)
-        
-    #update function for grades; moves grades and kills grades if they reach bottom of screen
-    def update(self,x,y):
-        self.rect.x=x
-        self.rect.y=y
-
-class Player(pygame.sprite.Sprite):
-    
-    def __init__(self):
-        pygame.sprite.Sprite.__init__(self)
-        self.rect = pygame.Rect(400, 300, 50, 50)
-        self.character_speed = 100
-        self.isAlive = True
-
-class Game():
-
-    def __init__(self,screen):
-        self.player = Player()
-        self.asteroid = Asteroid()
-        self.screen = screen
-        self.clock = pygame.time.Clock()
-
-        secret = "monkey_eating_lettuce"
-
-        server_address = ('localhost', 2005)
-        self.sock = socket(AF_INET, SOCK_STREAM)
-        try:
-            self.sock.connect(server_address)
-            self.sock.setblocking(0)  # Set the socket to non-blocking mode
-
-            #send secret to server to have it recognize client as legitimate
-            self.sock.sendall(secret.encode('utf-8'))
-        except BlockingIOError:
-            pass  # No data received
-        except Exception as e:
-            print(f"An error occurred while receiving data: {e}")
-
-
-
-    def render(self):
-        if self.player.isAlive:
-            self.screen.blit(pygame.Surface((50,50)),self.player.rect)
-        self.screen.blit(pygame.Surface((50,50)),self.asteroid.rect)
-
-        pygame.display.flip()
-    
-    def start(self):
-        running = True
-
-        self.render()
-
-        
-        last_frame_time = 0
-
-        while running:
-            
-            #Player movement
-            current_frame_time = pygame.time.get_ticks()
-            delta_time = (current_frame_time - last_frame_time) / 1000.0
-            last_frame_time = current_frame_time
-
-            keys = pygame.key.get_pressed()
-            if self.player.isAlive:
-                if keys[pygame.K_LEFT] and self.player.rect.x>=0:
-                    self.player.rect.x -= self.player.character_speed * delta_time
-                elif keys[pygame.K_RIGHT] and self.player.rect.x<=(size[0]-50):
-                    self.player.rect.x += self.player.character_speed * delta_time
-
-            #Send player position to server
-            if self.player.isAlive:
-                message = str(self.player.rect.x)
-                try:
-                    self.sock.sendall(message.encode('utf-8'))
-                except BlockingIOError:
-                    pass  # No data received
-                except Exception as e:
-                    print(f"An error occurred while receiving data: {e}")
-
-            #Recieve asteroid position from server
-            try:
-                message = self.sock.recv(1024).decode('utf-8')
-                data = json.loads(message)
-                if "positionX" in data and "positionY" in data:
-                    self.asteroid.rect.x = data["positionX"]
-                    self.asteroid.rect.y = data["positionY"]
-                    # Print the received asteroid position data
-                    print("Received asteroid position: X = ", data["positionX"], ", Y = ", data["positionY"])
-                # Handle other data types as needed
-            except BlockingIOError:
-                pass  # No data received
-            except Exception as e:
-                print(f"An error occurred while receiving data: {e}")
-
-            #Collision detection
-            if self.asteroid.rect.colliderect(self.player.rect):
-                self.player.isAlive=False
-            
-            self.render()
-            clock.tick(30)
-        
-        self.sock.close()
-        pygame.quit()

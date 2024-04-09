@@ -13,7 +13,7 @@ Blockable.o : Blockable.h Blockable.cpp
 	g++ -c Blockable.cpp -std=c++11
 
 Server.o : Server.cpp thread.h socketserver.h
-	g++ -c Server.cpp -std=c++11
+	g++ -c Server.cpp -std=c++11 -I/opt/homebrew/include
 
 thread.o : thread.cpp thread.h
 	g++ -c thread.cpp -std=c++11
